@@ -100,6 +100,9 @@ ipython_config.py
 #   commonly ignored for libraries.
 #uv.lock
 
+# Python virtual environments (uv-specific)
+.python-version
+
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
@@ -208,3 +211,25 @@ __marimo__/
 
 # data
 data/
+chatkit.sqlite
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE - VSCode
+.vscode/
+*.code-workspace
+
+# IDE - PyCharm
+.idea/
+
+# Temporary files
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env.local
+.env.*.local
