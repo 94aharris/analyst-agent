@@ -1,0 +1,17 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem;
+  min-height: 100vh;
+}
+
+.app h1 {
+  margin-bottom: 2rem;
+}
+
+.chat-container {
+  width: 100%;
+  max-width: 600px;
+  height: 600px;
+}

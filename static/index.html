@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Analyst Agent Chat</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://cdn.platform.openai.com/deployments/chatkit/chatkit.js"></script>
+    <script src="/static/chat.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-shell">
+        <h1>Analyst Agent</h1>
+        <p>Chat with the FastAPI + ChatKit powered assistant.</p>
+      </div>
+    </header>
+    <main class="app-main">
+      <div class="app-shell">
+        <openai-chatkit id="chatkit-element"></openai-chatkit>
+      </div>
+    </main>
+    <footer class="app-footer">
+      <div class="app-shell">
+        <small>
+          Demo integration powered by
+          <a href="https://openai.github.io/chatkit-js/" target="_blank" rel="noreferrer">ChatKit</a>
+          and FastAPI.
+        </small>
+      </div>
+    </footer>
+  </body>
+</html>
