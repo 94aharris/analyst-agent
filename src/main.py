@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +25,7 @@ app.add_middleware(
 )
 
 datastore = SqliteStore()
-attachment_store = RawAttachmentStore()
+attachment_store = RawAttachmentStore(metadata_store=datastore)
 
 server = MyChatKitServer(datastore, attachment_store)
 
@@ -51,20 +51,22 @@ async def chatkit_endpoint(request: Request):
 
 
 @app.post("/attachments/upload")
-async def upload_attachment(
-    file: UploadFile = File(...),
-    name: str = Form(None),
-    mime_type: str = Form(None),
-):
+async def upload_attachment(request: Request):
     """Upload an attachment and return its metadata."""
-    # Use provided name or fall back to uploaded filename
-    attachment_name = name or file.filename or "unnamed"
+    # Parse the multipart form data
+    form = await request.form()
 
-    # Use provided mime_type or fall back to file's content_type
-    attachment_mime_type = mime_type or file.content_type or "application/octet-stream"
+    # Get the uploaded file
+    uploaded_file = form.get("file")
+    if not uploaded_file:
+        raise HTTPException(status_code=422, detail="No file provided")
+
+    # Get file metadata
+    attachment_name = uploaded_file.filename or "unnamed"
+    attachment_mime_type = uploaded_file.content_type or "application/octet-stream"
 
     # Read file bytes
-    file_bytes = await file.read()
+    file_bytes = await uploaded_file.read()
 
     # Create attachment using the store
     attachment_params = AttachmentCreateParams(
@@ -80,3 +82,14 @@ async def upload_attachment(
 
     # Return the attachment as JSON
     return JSONResponse(content=attachment.model_dump(mode="json"))
+
+
+@app.get("/attachments/{attachment_id}/{filename}")
+async def get_attachment(attachment_id: str, filename: str):
+    """Serve uploaded attachment files."""
+    attachment_path = Path("data/attachments") / attachment_id / filename
+
+    if not attachment_path.exists():
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    return FileResponse(attachment_path)

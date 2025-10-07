@@ -32,13 +32,13 @@ class _PaginationState:
 class SqliteStore(Store[TContext]):
     """SQLite-backed implementation of :class:`chatkit.store.Store`.
 
-    Threads and thread items are persisted as JSON blobs to preserve forward
-    compatibility with evolving ChatKit schemas. Attachment APIs are stubbed out
-    for now and will be implemented later.
+    Threads, thread items, and attachments are persisted as JSON blobs to
+    preserve forward compatibility with evolving ChatKit schemas.
     """
 
     _THREAD_ADAPTER = TypeAdapter(ThreadMetadata)
     _THREAD_ITEM_ADAPTER = TypeAdapter(ThreadItem)
+    _ATTACHMENT_ADAPTER = TypeAdapter(Attachment)
 
     def __init__(self, db_path: str | Path = "chatkit.sqlite") -> None:
         self._db_path = Path(db_path)
@@ -268,23 +268,51 @@ class SqliteStore(Store[TContext]):
             )
 
     # ------------------------------------------------------------------
-    # Public API - attachments (stubbed)
+    # Public API - attachments
     async def save_attachment(self, attachment: Attachment, context: TContext) -> None:  # type: ignore[override]
-        raise NotImplementedError(
-            "Attachment persistence is not available in SqliteStore yet"
+        attachment_json = self._ATTACHMENT_ADAPTER.dump_json(attachment).decode("utf-8")
+        created_at_val = getattr(attachment, "created_at", None)
+        if hasattr(created_at_val, "isoformat"):
+            created_at = created_at_val.isoformat()  # type: ignore[assignment]
+        elif isinstance(created_at_val, str):
+            created_at = created_at_val
+        else:
+            created_at = _utc_now_iso()
+        updated_at = _utc_now_iso()
+
+        await self._execute(
+            (
+                "INSERT INTO attachments (id, data, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET data = excluded.data, "
+                "updated_at = excluded.updated_at"
+            ),
+            (
+                attachment.id,
+                attachment_json,
+                created_at,
+                updated_at,
+            ),
         )
 
     async def load_attachment(
         self, attachment_id: str, context: TContext
     ) -> Attachment:  # type: ignore[override]
-        raise NotImplementedError(
-            "Attachment retrieval is not available in SqliteStore yet"
+        row = await self._query_one(
+            "SELECT data FROM attachments WHERE id = ?",
+            (attachment_id,),
         )
+        if row is None:
+            raise KeyError(f"Attachment {attachment_id!r} was not found")
+        return self._ATTACHMENT_ADAPTER.validate_json(row["data"])
 
     async def delete_attachment(self, attachment_id: str, context: TContext) -> None:  # type: ignore[override]
-        raise NotImplementedError(
-            "Attachment deletion is not available in SqliteStore yet"
+        changes = await self._execute(
+            "DELETE FROM attachments WHERE id = ?",
+            (attachment_id,),
         )
+        if changes == 0:
+            raise KeyError(f"Attachment {attachment_id!r} was not found")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -317,6 +345,16 @@ class SqliteStore(Store[TContext]):
                 """
                 CREATE INDEX IF NOT EXISTS idx_thread_items_thread_position
                 ON thread_items(thread_id, position)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attachments (
+                    id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
                 """
             )
 

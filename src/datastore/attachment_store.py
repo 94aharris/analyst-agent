@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from chatkit.agents import TContext
-from chatkit.store import Attachment, AttachmentStore
+from chatkit.store import Attachment, AttachmentStore, Store
 from chatkit.types import AttachmentCreateParams, FileAttachment, ImageAttachment
 from pydantic import AnyUrl, TypeAdapter
 
@@ -40,10 +40,12 @@ class RawAttachmentStore(AttachmentStore[TContext]):
         root_dir: str | Path = Path("data/attachments"),
         *,
         public_base_url: str | None = None,
+        metadata_store: Store[TContext] | None = None,
     ) -> None:
         self._root = Path(root_dir)
         self._root.mkdir(parents=True, exist_ok=True)
         self._public_base_url = public_base_url.rstrip("/") if public_base_url else None
+        self._metadata_store = metadata_store
 
     async def create_attachment(
         self, input: AttachmentCreateParams, context: TContext
@@ -74,6 +76,7 @@ class RawAttachmentStore(AttachmentStore[TContext]):
             "id": attachment_id,
             "name": input.name,
             "mime_type": input.mime_type,
+            "size": len(payload),
             "upload_url": None,
         }
 
@@ -81,9 +84,14 @@ class RawAttachmentStore(AttachmentStore[TContext]):
             preview_url = _ANY_URL_ADAPTER.validate_python(
                 self._build_preview_url(attachment_id, stored_name)
             )
-            return ImageAttachment(preview_url=preview_url, **base_kwargs)
+            attachment: Attachment = ImageAttachment(
+                preview_url=preview_url, **base_kwargs
+            )
+        else:
+            attachment = FileAttachment(**base_kwargs)
 
-        return FileAttachment(**base_kwargs)
+        await self._maybe_save_metadata(attachment, context)
+        return attachment
 
     async def delete_attachment(self, attachment_id: str, context: TContext) -> None:
         attachment_dir = self._attachment_dir(attachment_id)
@@ -91,6 +99,21 @@ class RawAttachmentStore(AttachmentStore[TContext]):
             raise KeyError(f"Attachment {attachment_id!r} was not found")
 
         await asyncio.to_thread(shutil.rmtree, attachment_dir)
+        await self._maybe_delete_metadata(attachment_id, context)
+
+    async def get_local_path(self, attachment_id: str, context: TContext) -> Path:
+        metadata = await self._load_metadata(attachment_id)
+        stored_name = metadata.get("stored_name")
+        if not stored_name:
+            raise KeyError(
+                f"Attachment {attachment_id!r} metadata missing stored file reference"
+            )
+        return (self._attachment_dir(attachment_id) / stored_name).resolve()
+
+    async def get_metadata(
+        self, attachment_id: str, context: TContext
+    ) -> dict[str, Any]:
+        return await self._load_metadata(attachment_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -173,3 +196,25 @@ class RawAttachmentStore(AttachmentStore[TContext]):
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    async def _load_metadata(self, attachment_id: str) -> dict[str, Any]:
+        metadata_path = self._attachment_dir(attachment_id) / "metadata.json"
+        if not metadata_path.exists():
+            raise KeyError(f"Attachment {attachment_id!r} metadata was not found")
+        return await asyncio.to_thread(self._read_json, metadata_path)
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, Any]:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    async def _maybe_save_metadata(
+        self, attachment: Attachment, context: TContext
+    ) -> None:
+        if self._metadata_store is not None:
+            await self._metadata_store.save_attachment(attachment, context)
+
+    async def _maybe_delete_metadata(
+        self, attachment_id: str, context: TContext
+    ) -> None:
+        if self._metadata_store is not None:
+            await self._metadata_store.delete_attachment(attachment_id, context)

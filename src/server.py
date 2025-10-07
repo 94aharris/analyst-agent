@@ -1,8 +1,21 @@
-from typing import Any, AsyncIterator
+import asyncio
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Any, AsyncIterator, Tuple
+
 from chatkit.server import ChatKitServer
-from chatkit.store import Store, AttachmentStore
-from chatkit.agents import AgentContext
-from chatkit.types import ThreadMetadata, UserMessageItem, ThreadStreamEvent
+from chatkit.store import AttachmentStore, Store
+from chatkit.types import (
+    Attachment,
+    AssistantMessageContent,
+    AssistantMessageItem,
+    ThreadItemAddedEvent,
+    ThreadMetadata,
+    ThreadStreamEvent,
+    UserMessageItem,
+)
 
 
 class MyChatKitServer(ChatKitServer):
@@ -10,11 +23,8 @@ class MyChatKitServer(ChatKitServer):
         self, data_store: Store, attachment_store: AttachmentStore | None = None
     ):
         super().__init__(data_store, attachment_store)
-
-    # Commented out for now - will be used later
-    # assistant_agent = Agent[AgentContext](
-    #     model="gpt-4.1", name="Assistant", instructions="You are a helpful assistant"
-    # )
+        # Store Claude session IDs per thread
+        self.claude_sessions: dict[str, str] = {}
 
     async def respond(
         self,
@@ -22,47 +32,58 @@ class MyChatKitServer(ChatKitServer):
         input_user_message: UserMessageItem | None,
         context: Any,
     ) -> AsyncIterator[ThreadStreamEvent]:
-        """
-        Invoke Claude headless mode and stream back the response.
-        """
-        import asyncio
-        from datetime import datetime
-        from chatkit.types import (
-            ThreadItemAddedEvent,
-            AssistantMessageItem,
-            AssistantMessageContent,
-        )
-
-        # Extract the user's message text
+        """Invoke Claude headless mode and return a single message."""
         if not input_user_message:
             return
 
-        user_text = ""
-        if input_user_message.content:
-            for content_item in input_user_message.content:
-                if hasattr(content_item, "text"):
-                    user_text += content_item.text
+        user_text = self._extract_user_text(input_user_message)
 
-        # Invoke Claude headless mode
-        process = await asyncio.create_subprocess_exec(
-            "claude",
-            "-p",
-            user_text,
-            "--output-format",
-            "text",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        attachment_blocks: list[str] = []
+        attachment_env_payload: list[dict[str, Any]] = []
+        attachments = getattr(input_user_message, "attachments", None) or []
+        for attachment in attachments:
+            block, env_entry = await self._build_attachment_context(attachment, context)
+            if block:
+                attachment_blocks.append(block)
+            if env_entry:
+                attachment_env_payload.append(env_entry)
+
+        if attachment_blocks:
+            user_text = f"{user_text}\n\n[Attachments]\n" + "\n".join(attachment_blocks)
+
+        session_id = self.claude_sessions.get(thread.id)
+        process_env = (
+            self._build_process_env(attachment_env_payload)
+            if attachment_env_payload
+            else None
         )
 
-        # Read the output
+        args = ["claude", "-p", user_text, "--output-format", "json"]
+        if session_id:
+            args.extend(["--resume", session_id])
+
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=process_env,
+        )
+
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            response_text = f"Error invoking Claude: {stderr.decode()}"
+            response_text = f"Error invoking Claude: {stderr.decode().strip()}"
         else:
-            response_text = stdout.decode()
+            try:
+                payload = json.loads(stdout.decode())
+            except json.JSONDecodeError:
+                payload = {}
 
-        # Create assistant message with Claude's response
+            response_text = payload.get("result") or stdout.decode().strip()
+            new_session = payload.get("session_id")
+            if new_session:
+                self.claude_sessions[thread.id] = new_session
+
         message_item = AssistantMessageItem(
             id=f"msg_{datetime.now().timestamp()}",
             thread_id=thread.id,
@@ -70,27 +91,54 @@ class MyChatKitServer(ChatKitServer):
             type="assistant_message",
             content=[
                 AssistantMessageContent(
-                    type="output_text", text=response_text, annotations=[]
+                    type="output_text",
+                    text=response_text,
+                    annotations=[],
                 )
             ],
         )
-
-        # Yield the event
         yield ThreadItemAddedEvent(type="thread.item.added", item=message_item)
 
-        # Original implementation - commented out for now
-        # agent_context = AgentContext(
-        #     thread=thread,
-        #     store=self.store,
-        #     request_context=context,
-        # )
-        # result = Runner.run_streamed(
-        #     self.assistant_agent,
-        #     await simple_to_agent_input(input_user_message) if input_user_message else [],
-        #     context=agent_context,
-        # )
-        # async for event in stream_agent_response(
-        #     agent_context,
-        #     result,
-        # ):
-        #     yield event
+    def _extract_user_text(self, message: UserMessageItem) -> str:
+        text_parts: list[str] = []
+        if message.content:
+            for content_item in message.content:
+                item_text = getattr(content_item, "text", None)
+                if item_text:
+                    text_parts.append(item_text)
+        return "".join(text_parts)
+
+    async def _build_attachment_context(
+        self, attachment: Attachment, request_context: Any
+    ) -> Tuple[str | None, dict[str, Any] | None]:
+        store = getattr(self, "attachment_store", None)
+        if store is None or not hasattr(store, "get_local_path"):
+            return None, None
+
+        try:
+            path = Path(await store.get_local_path(attachment.id, request_context))
+        except Exception as exc:  # pragma: no cover - best effort logging
+            return (
+                f"- Attachment {attachment.name or attachment.id}: unavailable ({exc})",
+                None,
+            )
+
+        mime_type = getattr(attachment, "mime_type", None)
+        details = [
+            f"- {attachment.name or attachment.id} — {mime_type or 'unknown'}",
+            f"  {path}",
+        ]
+        env_entry: dict[str, Any] = {
+            "id": attachment.id,
+            "name": attachment.name,
+            "mime_type": mime_type,
+            "path": str(path),
+        }
+
+        return "\n".join(details), env_entry
+
+    @staticmethod
+    def _build_process_env(attachments: list[dict[str, Any]]) -> dict[str, str]:
+        env = os.environ.copy()
+        env["CHATKIT_ATTACHMENTS"] = json.dumps(attachments)
+        return env
