@@ -23,9 +23,9 @@ class MyChatKitServer(ChatKitServer):
         context: Any,
     ) -> AsyncIterator[ThreadStreamEvent]:
         """
-        Respond to all requests with 'It's alive' for now.
+        Invoke Claude headless mode and stream back the response.
         """
-        # Import necessary types for creating response
+        import asyncio
         from datetime import datetime
         from chatkit.types import (
             ThreadItemAddedEvent,
@@ -33,7 +33,36 @@ class MyChatKitServer(ChatKitServer):
             AssistantMessageContent,
         )
 
-        # Create assistant message with "It's alive" response
+        # Extract the user's message text
+        if not input_user_message:
+            return
+
+        user_text = ""
+        if input_user_message.content:
+            for content_item in input_user_message.content:
+                if hasattr(content_item, "text"):
+                    user_text += content_item.text
+
+        # Invoke Claude headless mode
+        process = await asyncio.create_subprocess_exec(
+            "claude",
+            "-p",
+            user_text,
+            "--output-format",
+            "text",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        # Read the output
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            response_text = f"Error invoking Claude: {stderr.decode()}"
+        else:
+            response_text = stdout.decode()
+
+        # Create assistant message with Claude's response
         message_item = AssistantMessageItem(
             id=f"msg_{datetime.now().timestamp()}",
             thread_id=thread.id,
@@ -41,7 +70,7 @@ class MyChatKitServer(ChatKitServer):
             type="assistant_message",
             content=[
                 AssistantMessageContent(
-                    type="output_text", text="It's alive", annotations=[]
+                    type="output_text", text=response_text, annotations=[]
                 )
             ],
         )

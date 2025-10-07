@@ -41,13 +41,6 @@ async def root_page() -> FileResponse:
     return FileResponse(index_file)
 
 
-# @app.post("/api/chatkit/session")
-# async def create_chatkit_session():
-#     """Create a ChatKit session and return client_secret."""
-#     session = server.create_session()
-#     return {"client_secret": session.client_secret}
-
-
 @app.post("/chatkit")
 async def chatkit_endpoint(request: Request):
     result = await server.process(await request.body(), {})
