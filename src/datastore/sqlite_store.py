@@ -10,6 +10,8 @@ from chatkit.agents import TContext
 from chatkit.store import Attachment, Page, Store, ThreadItem, ThreadMetadata
 from pydantic import TypeAdapter
 
+from src.config import get_settings
+
 
 T = TypeVar("T")
 
@@ -40,7 +42,9 @@ class SqliteStore(Store[TContext]):
     _THREAD_ITEM_ADAPTER = TypeAdapter(ThreadItem)
     _ATTACHMENT_ADAPTER = TypeAdapter(Attachment)
 
-    def __init__(self, db_path: str | Path = "chatkit.sqlite") -> None:
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        if db_path is None:
+            db_path = get_settings().db_path
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()

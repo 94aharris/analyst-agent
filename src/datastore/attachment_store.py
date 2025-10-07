@@ -12,6 +12,8 @@ from chatkit.store import Attachment, AttachmentStore, Store
 from chatkit.types import AttachmentCreateParams, FileAttachment, ImageAttachment
 from pydantic import AnyUrl, TypeAdapter
 
+from src.config import get_settings
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -37,11 +39,16 @@ class RawAttachmentStore(AttachmentStore[TContext]):
 
     def __init__(
         self,
-        root_dir: str | Path = Path("data/attachments"),
+        root_dir: str | Path | None = None,
         *,
         public_base_url: str | None = None,
         metadata_store: Store[TContext] | None = None,
     ) -> None:
+        settings = get_settings()
+        if root_dir is None:
+            root_dir = settings.attachments_dir
+        if public_base_url is None:
+            public_base_url = settings.public_base_url
         self._root = Path(root_dir)
         self._root.mkdir(parents=True, exist_ok=True)
         self._public_base_url = public_base_url.rstrip("/") if public_base_url else None
